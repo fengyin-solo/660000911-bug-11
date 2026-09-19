@@ -39,7 +39,7 @@
 
     <div v-if="currentAlerts.length > 0" style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#666">
-        <input type="checkbox" v-model="selectAll" @change="toggleSelectAll" style="cursor:pointer">
+        <input type="checkbox" v-model="isAllSelected" style="cursor:pointer">
         全选
       </label>
       <button v-if="selectedIds.length > 0" @click="handleBatchAcknowledge"
@@ -232,7 +232,6 @@ const store = useIotStore();
 
 const activeTab = ref<'all' | 'critical' | 'warning' | 'info'>('all');
 const selectedIds = ref<string[]>([]);
-const selectAll = ref(false);
 const mockStreamEnabled = ref(false);
 
 const currentAlerts = computed(() => {
@@ -245,6 +244,23 @@ const currentAlerts = computed(() => {
       return store.infoAlerts;
     default:
       return store.unacknowledgedAlerts;
+  }
+});
+
+// 全选状态始终由“当前标签可见列表”与实际勾选集合推导，避免残留旧选择
+const visibleIds = computed(() => new Set(currentAlerts.value.map(a => a.id)));
+const isAllSelected = computed({
+  get() {
+    return currentAlerts.value.length > 0 &&
+      currentAlerts.value.every(a => selectedIds.value.includes(a.id));
+  },
+  set(checked: boolean) {
+    if (checked) {
+      // 只作用于当前标签可见的告警，一次提交整组处理
+      selectedIds.value = currentAlerts.value.map(a => a.id);
+    } else {
+      selectedIds.value = [];
+    }
   }
 });
 
@@ -337,10 +353,11 @@ function handleAcknowledge(id: string) {
 }
 
 function handleBatchAcknowledge() {
-  if (selectedIds.value.length > 0) {
-    store.batchAcknowledgeAlerts(selectedIds.value);
+  // 仅提交当前标签可见且仍未处理的勾选，一次提交
+  const idsToAck = selectedIds.value.filter(id => visibleIds.value.has(id));
+  if (idsToAck.length > 0) {
+    store.batchAcknowledgeAlerts(idsToAck);
     selectedIds.value = [];
-    selectAll.value = false;
   }
 }
 
@@ -348,22 +365,22 @@ function handleAcknowledgeAll() {
   if (confirm('确定要确认所有告警吗？')) {
     store.acknowledgeAllAlerts();
     selectedIds.value = [];
-    selectAll.value = false;
   }
 }
 
-function toggleSelectAll() {
-  if (selectAll.value) {
-    selectedIds.value = currentAlerts.value.map(a => a.id);
-  } else {
-    selectedIds.value = [];
-  }
-}
+// 切换标签时清理已有选择，选择范围与可见列表同步，并重置全选状态
+watch(activeTab, () => {
+  selectedIds.value = [];
+});
 
-watch(currentAlerts, () => {
-  const allSelected = currentAlerts.value.length > 0 &&
-    currentAlerts.value.every(a => selectedIds.value.includes(a.id));
-  selectAll.value = allSelected;
+// 列表变化（新告警、确认处理、从其他面板返回）时，剔除当前标签中已不可见的选择，
+// 保证勾选数量与可见清单始终一致
+watch(currentAlerts, (alerts) => {
+  const ids = new Set(alerts.map(a => a.id));
+  const pruned = selectedIds.value.filter(id => ids.has(id));
+  if (pruned.length !== selectedIds.value.length) {
+    selectedIds.value = pruned;
+  }
 }, { deep: true });
 
 function toggleMockStream() {
