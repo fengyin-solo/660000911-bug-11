@@ -39,13 +39,13 @@
 
     <div v-if="currentAlerts.length > 0" style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#666">
-        <input type="checkbox" v-model="selectAll" @change="toggleSelectAll" style="cursor:pointer">
+        <input type="checkbox" v-model="selectAll" style="cursor:pointer">
         全选
       </label>
-      <button v-if="selectedIds.length > 0" @click="handleBatchAcknowledge"
+      <button v-if="visibleSelectedIds.length > 0" @click="handleBatchAcknowledge"
         :style="{ padding:'5px 12px', borderRadius:'4px', border:'none', background:'#4caf50', color:'#fff',
           cursor:'pointer', fontSize:'12px', fontWeight:500 }">
-        ✓ 确认处理 ({{ selectedIds.length }})
+        ✓ 确认处理 ({{ visibleSelectedIds.length }})
       </button>
       <button v-if="store.alertCount > 0" @click="handleAcknowledgeAll"
         :style="{ padding:'5px 12px', borderRadius:'4px', border:'1px solid #999', background:'#fff', color:'#666',
@@ -232,7 +232,6 @@ const store = useIotStore();
 
 const activeTab = ref<'all' | 'critical' | 'warning' | 'info'>('all');
 const selectedIds = ref<string[]>([]);
-const selectAll = ref(false);
 const mockStreamEnabled = ref(false);
 
 const currentAlerts = computed(() => {
@@ -245,6 +244,27 @@ const currentAlerts = computed(() => {
       return store.infoAlerts;
     default:
       return store.unacknowledgedAlerts;
+  }
+});
+
+// 勾选范围始终限定在当前标签的可见列表内，避免残留其他标签的选择
+const visibleIds = computed(() => new Set(currentAlerts.value.map(a => a.id)));
+const visibleSelectedIds = computed(() =>
+  selectedIds.value.filter(id => visibleIds.value.has(id))
+);
+
+const selectAll = computed<boolean>({
+  get() {
+    return currentAlerts.value.length > 0 &&
+      visibleSelectedIds.value.length === currentAlerts.value.length;
+  },
+  set(checked) {
+    if (checked) {
+      selectedIds.value = currentAlerts.value.map(a => a.id);
+    } else {
+      // 仅取消当前标签的选择，保留范围本身已被限制在当前标签内
+      selectedIds.value = [];
+    }
   }
 });
 
@@ -337,10 +357,11 @@ function handleAcknowledge(id: string) {
 }
 
 function handleBatchAcknowledge() {
-  if (selectedIds.value.length > 0) {
-    store.batchAcknowledgeAlerts(selectedIds.value);
-    selectedIds.value = [];
-    selectAll.value = false;
+  // 只提交当前标签可见列表中的勾选，杜绝误处理其他标签里看不到的告警
+  const ids = visibleSelectedIds.value;
+  if (ids.length > 0) {
+    store.batchAcknowledgeAlerts(ids);
+    selectedIds.value = selectedIds.value.filter(id => !visibleIds.value.has(id));
   }
 }
 
@@ -348,22 +369,21 @@ function handleAcknowledgeAll() {
   if (confirm('确定要确认所有告警吗？')) {
     store.acknowledgeAllAlerts();
     selectedIds.value = [];
-    selectAll.value = false;
   }
 }
 
-function toggleSelectAll() {
-  if (selectAll.value) {
-    selectedIds.value = currentAlerts.value.map(a => a.id);
-  } else {
-    selectedIds.value = [];
-  }
-}
+// 切换标签时清空选择，使选择范围与新标签的可见列表同步
+watch(activeTab, () => {
+  selectedIds.value = [];
+});
 
-watch(currentAlerts, () => {
-  const allSelected = currentAlerts.value.length > 0 &&
-    currentAlerts.value.every(a => selectedIds.value.includes(a.id));
-  selectAll.value = allSelected;
+// 可见列表变化（单条确认、模拟告警流入、全部确认等）时，
+// 清理已不在列表中的勾选，保证清单与计数一致
+watch(currentAlerts, (alerts) => {
+  const ids = new Set(alerts.map(a => a.id));
+  if (selectedIds.value.some(id => !ids.has(id))) {
+    selectedIds.value = selectedIds.value.filter(id => ids.has(id));
+  }
 }, { deep: true });
 
 function toggleMockStream() {
